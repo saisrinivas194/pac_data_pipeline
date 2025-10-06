@@ -1,0 +1,16 @@
+Copy this file to .env and add your real credentials
+
+# For CSV Pipeline Only
+FIREBASE_PROJECT_ID=your_project_name_here
+FIREBASE_PRIVATE_KEY_ID=your_private_key_id_here
+FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nyour_private_key_here\n-----END PRIVATE KEY-----\n"
+FIREBASE_CLIENT_EMAIL=your_service_account@your_project.iam.gserviceaccount.com
+FIREBASE_CLIENT_ID=your_client_id_here
+
+# For Snowflake Pipeline (also include Firebase above)
+SNOWFLAKE_USER=your_snowflake_username
+SNOWFLAKE_PASSWORD=your_snowflake_password
+SNOWFLAKE_ACCOUNT=your_account_identifier
+SNOWFLAKE_WAREHOUSE=your_warehouse_name
+SNOWFLAKE_DATABASE=your_database_name
+SNOWFLAKE_SCHEMA=your_schema_name
