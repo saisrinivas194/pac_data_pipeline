@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PAC SNOWFLAKE TO REALTIME DATABASE TRANSFER
-Professional PAC data pipeline for transferring data from Snowflake to Firebase Realtime Database
+Professional PAC data pipeline for transferring aggregated data from Snowflake to Firebase Realtime Database
 """
 
 import os
@@ -71,8 +71,8 @@ def get_pac_data_from_snowflake(conn, query):
         print(f"ERROR: Data retrieval failed: {str(e)}")
         return None
 
-def clean_pac_data(df):
-    """Clean and format PAC data for Firebase"""
+def clean_and_aggregate_pac_data(df):
+    """Clean and aggregate PAC data for Firebase Realtime Database structure"""
     try:
         # Clean column names
         df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
@@ -84,161 +84,97 @@ def clean_pac_data(df):
         # Handle missing values
         df = df.fillna('')
         
-        # Add metadata
-        df['upload_timestamp'] = datetime.now().isoformat()
-        df['data_source'] = 'snowflake'
+        print("AGGREGATING DATA BY COMPANY AND ELECTION CYCLE")
+        print("=" * 50)
         
-        print("SUCCESS: Data cleaned and formatted")
-        return df
+        # Aggregate by company (ticker) and election cycle
+        aggregated_data = {}
+        
+        # Group by ticker and election cycle
+        for (ticker, election_cycle), group in df.groupby(['ticker', 'election_cycle']):
+            if pd.isna(ticker) or ticker == '':
+                continue
+                
+            # Calculate totals by political party
+            democrat_total = 0
+            republican_total = 0
+            
+            for _, row in group.iterrows():
+                committee_name = str(row.get('committee_name', '')).lower()
+                amount = row.get('receipt_amount', 0)
+                
+                if pd.isna(amount) or amount <= 0:
+                    continue
+                
+                # Determine political party based on committee name
+                if any(keyword in committee_name for keyword in ['republican', 'gop', 'conservative']):
+                    republican_total += amount
+                elif any(keyword in committee_name for keyword in ['democrat', 'democratic', 'liberal', 'progressive']):
+                    democrat_total += amount
+                # Skip independent/other parties for now
+            
+            # Only include companies with actual contributions
+            if democrat_total > 0 or republican_total > 0:
+                if ticker not in aggregated_data:
+                    aggregated_data[ticker] = {}
+                
+                aggregated_data[ticker][str(election_cycle)] = {
+                    'pac': {
+                        'democrat': democrat_total,
+                        'republican': republican_total
+                    }
+                }
+        
+        print(f"SUCCESS: Aggregated {len(df)} individual records into {len(aggregated_data)} company summaries")
+        return aggregated_data
+        
     except Exception as e:
-        print(f"ERROR: Data cleaning failed: {str(e)}")
+        print(f"ERROR: Data aggregation failed: {str(e)}")
         return None
 
-def check_and_delete_duplicates_realtime(ref, data_key):
-    """Check for duplicates in Realtime Database"""
-    try:
-        print("CHECKING FOR DUPLICATES")
-        print("=" * 50)
-        
-        # Get existing data
-        existing_data = ref.child(data_key).get()
-        
-        if not existing_data:
-            print("SUCCESS: No existing data found")
-            return True
-        
-        duplicates_found = 0
-        
-        # Check for duplicates based on key fields
-        for record_id, record_data in existing_data.items():
-            if isinstance(record_data, dict):
-                # Create unique key for comparison
-                key_fields = ['ticker', 'election_cycle', 'committee_name', 'receipt_amount']
-                unique_key = '_'.join([str(record_data.get(field, '')) for field in key_fields])
-                
-                # Check if this key appears multiple times
-                count = sum(1 for rid, rdata in existing_data.items() 
-                           if isinstance(rdata, dict) and 
-                           '_'.join([str(rdata.get(field, '')) for field in key_fields]) == unique_key)
-                
-                if count > 1:
-                    print(f"Found duplicate: {record_id}")
-                    ref.child(data_key).child(record_id).delete()
-                    duplicates_found += 1
-        
-        if duplicates_found > 0:
-            print(f"SUCCESS: Deleted {duplicates_found} duplicate records")
-        else:
-            print("SUCCESS: No duplicates found")
-        
-        return True
-        
-    except Exception as e:
-        print(f"ERROR: Duplicate check failed: {str(e)}")
-        return False
-
-def compare_upload_vs_existing_realtime(ref, data_key, new_data):
-    """Compare new data with existing data"""
-    try:
-        print("COMPARING UPLOAD VS EXISTING DATA")
-        print("=" * 50)
-        
-        existing_data = ref.child(data_key).get()
-        
-        if not existing_data:
-            print("No existing data found")
-            print(f"Will upload {len(new_data)} new records")
-            return True
-        
-        existing_count = len(existing_data) if existing_data else 0
-        new_count = len(new_data)
-        
-        print(f"Existing records: {existing_count}")
-        print(f"New records to upload: {new_count}")
-        print(f"Total records after upload: {existing_count + new_count}")
-        
-        return True
-        
-    except Exception as e:
-        print(f"ERROR: Data comparison failed: {str(e)}")
-        return False
-
-def upload_batch_to_realtime(ref, batch_data, batch_number, total_batches):
-    """Upload a batch of data to Realtime Database"""
-    try:
-        print(f"Uploading batch {batch_number}/{total_batches} ({len(batch_data)} records)")
-        
-        success_count = 0
-        
-        for index, record in batch_data.iterrows():
-            try:
-                # Convert record to dictionary
-                record_dict = record.to_dict()
-                
-                # Generate unique key
-                record_key = f"pac_{index}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-                
-                # Upload to Realtime Database
-                ref.child('pac_contributions').child(record_key).set(record_dict)
-                success_count += 1
-                
-            except Exception as e:
-                print(f"ERROR: Failed to upload record {index}: {str(e)}")
-                continue
-        
-        print(f"SUCCESS: Uploaded {success_count}/{len(batch_data)} records from batch {batch_number}")
-        return success_count
-        
-    except Exception as e:
-        print(f"ERROR: Batch upload failed: {str(e)}")
-        return 0
-
-def upload_all_batches_realtime(ref, df, batch_size=1000, dry_run=False):
-    """Upload all data in batches to Realtime Database"""
+def upload_aggregated_data_to_realtime(ref, aggregated_data, dry_run=False):
+    """Upload aggregated company data to Realtime Database"""
     if dry_run:
-        print("DRY RUN MODE - Testing upload")
+        print("DRY RUN MODE - Testing aggregated data upload")
         print("=" * 50)
-        print(f"Would upload {len(df)} records in batches of {batch_size}")
-        print("Sample data:")
-        print(df.head(3).to_string())
+        print(f"Would upload {len(aggregated_data)} company summaries")
+        print("\nSample aggregated data:")
+        for i, (ticker, cycles) in enumerate(list(aggregated_data.items())[:3]):
+            print(f"\nCompany {i+1}: {ticker}")
+            for cycle, data in cycles.items():
+                pac_data = data.get('pac', {})
+                print(f"  {cycle}: Democrat ${pac_data.get('democrat', 0):,.2f}, Republican ${pac_data.get('republican', 0):,.2f}")
         print("\nWould automatically delete any duplicates found")
         print("Run with real upload to send data.")
         return True
     else:
-        print("UPLOADING TO REALTIME DATABASE")
+        print("UPLOADING AGGREGATED DATA TO REALTIME DATABASE")
         print("=" * 50)
-        
-        # Step 1: Compare upload vs existing data
-        if not compare_upload_vs_existing_realtime(ref, 'pac_contributions', df):
-            print("WARNING: Upload comparison failed, continuing with upload...")
-        
-        # Step 2: Check and delete duplicates
-        if not check_and_delete_duplicates_realtime(ref, 'pac_contributions'):
-            print("WARNING: Duplicate check failed, continuing...")
-        
-        # Step 3: Upload in batches
-        print("\nStep 3: Uploading new data...")
-        total_records = len(df)
-        total_batches = (total_records + batch_size - 1) // batch_size
         
         success_count = 0
         
-        for batch_num in range(total_batches):
-            start_idx = batch_num * batch_size
-            end_idx = min(start_idx + batch_size, total_records)
-            batch_data = df.iloc[start_idx:end_idx]
-            
-            batch_success = upload_batch_to_realtime(ref, batch_data, batch_num + 1, total_batches)
-            success_count += batch_success
-            
-            # Small delay between batches
-            if batch_num < total_batches - 1:
-                import time
-                time.sleep(0.1)
+        for ticker, cycles in aggregated_data.items():
+            try:
+                # Upload to brands/[ticker]/records/[cycle]/pac
+                for cycle, data in cycles.items():
+                    pac_data = data.get('pac', {})
+                    
+                    # Create the path: brands/[ticker]/records/[cycle]/pac
+                    brand_path = f"brands/{ticker}/records/{cycle}/pac"
+                    
+                    # Upload PAC data
+                    ref.child(brand_path).set(pac_data)
+                    success_count += 1
+                    
+                    print(f"  Uploaded: {ticker} ({cycle}) - D: ${pac_data.get('democrat', 0):,.2f}, R: ${pac_data.get('republican', 0):,.2f}")
+                
+            except Exception as e:
+                print(f"ERROR: Failed to upload {ticker}: {str(e)}")
+                continue
         
-        print(f"\nSUCCESS: Uploaded {success_count}/{total_records} records across {total_batches} batches")
-        print("SUCCESS: Duplicate check and upload completed (Realtime Database)")
-        return success_count >= total_records * 0.8
+        print(f"\nSUCCESS: Uploaded {success_count} company-election cycle combinations")
+        print("SUCCESS: Aggregated data upload completed (Realtime Database)")
+        return success_count > 0
 
 def main():
     """Main function to run the PAC data pipeline"""
@@ -275,27 +211,27 @@ def main():
         print("ERROR: No data retrieved from Snowflake")
         return False
     
-    # Step 3: Clean data
-    print("\nStep 3: Cleaning and formatting data...")
-    df_clean = clean_pac_data(df)
-    if df_clean is None:
-        print("ERROR: Data cleaning failed")
+    # Step 3: Clean and aggregate data
+    print("\nStep 3: Cleaning and aggregating data...")
+    aggregated_data = clean_and_aggregate_pac_data(df)
+    if aggregated_data is None or len(aggregated_data) == 0:
+        print("ERROR: Data aggregation failed")
         return False
     
     # Step 4: Upload to Firebase
-    print("\nStep 4: Uploading to Firebase Realtime Database...")
+    print("\nStep 4: Uploading aggregated data to Firebase Realtime Database...")
     
     # Ask user for confirmation
     try:
         user_input = input("\nDo you want to proceed with upload? (y/n): ").lower().strip()
         if user_input == 'y':
-            success = upload_all_batches_realtime(firebase_ref, df_clean, dry_run=False)
+            success = upload_aggregated_data_to_realtime(firebase_ref, aggregated_data, dry_run=False)
         else:
             print("Running in dry run mode...")
-            success = upload_all_batches_realtime(firebase_ref, df_clean, dry_run=True)
+            success = upload_aggregated_data_to_realtime(firebase_ref, aggregated_data, dry_run=True)
     except EOFError:
         print("Running in dry run mode...")
-        success = upload_all_batches_realtime(firebase_ref, df_clean, dry_run=True)
+        success = upload_aggregated_data_to_realtime(firebase_ref, aggregated_data, dry_run=True)
     
     # Step 5: Close connections
     print("\nStep 5: Closing connections...")
