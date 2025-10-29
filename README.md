@@ -1,50 +1,57 @@
-# PAC Data Processing Pipeline
+# Data Pipeline for Firebase
 
-### Setup
+Tools to move data from different sources to Firebase.
+
+## Quick Start
+
+First time setup:
 ```bash
-# Install dependencies
 pip install -r requirements.txt
-
-# Setup environment
 cp ENVIRONMENT_TEMPLATE.txt .env
-# Add your credentials to .env file
-
-# Test connections
-python test_snowflake_pipeline.py
+# Edit .env with your credentials
 ```
 
-### Usage
+## Running the Scripts
 
-**For CSV Data:**
+**For CSV data:**
 ```bash
 python pac_data_processor.py
 ```
 
-**For PAC Snowflake Data:**
+**For Snowflake data:**
 ```bash
 python pac_snowflake_pipeline.py
 ```
 
-## Features
+**For Index Align issues:**
+```bash
+python index_align_to_firebase.py
+```
 
-- Read PAC data from CSV files or Snowflake
-- Clean and standardize data automatically  
-- Generate comprehensive analysis reports
-- Upload data to Firebase Firestore
-- Batch processing for large datasets
-- Duplicate checking and validation
+**Test connections first:**
+```bash
+python test_index_align.py
+```
 
-## File Structure
+## What it does
 
-- `pac_data_processor.py` - CSV to Firebase pipeline
-- `snowflake_to_firebase.py` - Simple Snowflake upload
-- `snowflake_batch_upload.py` - Large data batch processing
-- `check_duplicates.py` - Duplicate detection
-- `test_snowflake_pipeline.py` - Connection testing
+- Pulls data from CSVs, Snowflake, or Index Align database
+- Connects through SSH to get Index Align data
+- Cleans up the data
+- Sends everything to Firebase
+- Handles duplicates automatically
 
-## Requirements
+## Scripts
 
-- Python 3.8+
-- CSV files OR Snowflake account
-- Firebase Firestore project
-- Service account credentials
+- `index_align_to_firebase.py` - Main script for Index Align issues
+- `test_index_align.py` - Test your connections before running
+- `pac_data_processor.py` - CSV to Firebase
+- `pac_snowflake_pipeline.py` - Snowflake to Firebase
+
+## What you need
+
+- Python 3.8 or newer
+- Firebase project set up
+- SSH access to Index Align server
+- Database credentials
+- See SETUP_GUIDE_INDEX_ALIGN.md for detailed setup

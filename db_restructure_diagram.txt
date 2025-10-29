@@ -1,0 +1,45 @@
+This is what our current brand objects look like:
+
+brands
+|
+L-> [brand_id]
+    |
+    L-> contribution
+	|
+	L-> democrat: [democrat total]
+	L-> level: [contribution level]	
+	L-> primary_party: [party most donated to]
+	L-> republican: [republican total]
+	L-> politician
+	    |
+	    L-> history: [backups of all the previous uploads]
+	    L-> latest
+		|
+		L-> company: [amount donated from the company pac]
+		L-> individuals: [amount donated by senior execs]
+		L-> political_action_commitees: [amount donated to pacs]
+		L-> top_politicians_and_pacs: [a list of politicans and pacs donated to]
+		L-> top_politicians_only: [a list of politicans donated to]
+
+This is what I want to restructure to:
+
+brands
+|
+L-> [brand_id]
+    |
+    L-> records
+	|
+	L-> 2026
+	    |
+	    L-> pac [company pac donations]
+		|
+		L> democrat: [amount from the company pac to dems]
+		L> republican: [amount from the company pac to reps]
+	    L-> exec [company exec donations]
+		|
+		L> democrat: [amount from the company execs to dems]
+		L> republican: [amount from the company execs to reps]
+	L-> 2024 [same thing but different cycle]
+...
+
+We don't need contribution level, primary party or the history of previous uploads, all of this data is redundant

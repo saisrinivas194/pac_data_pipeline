@@ -132,6 +132,35 @@ def clean_and_aggregate_pac_data(df):
         print(f"ERROR: Data aggregation failed: {str(e)}")
         return None
 
+def get_brand_id_from_ticker(ref, ticker):
+    """Get brand_id from ticker using the /tickers mapping"""
+    try:
+        ticker_ref = ref.child('tickers').child(ticker)
+        brand_id = ticker_ref.get()
+        if brand_id:
+            print(f"  Found brand_id for {ticker}: {brand_id}")
+            return brand_id
+        else:
+            print(f"  WARNING: No brand_id mapping found for ticker {ticker}")
+            return None
+    except Exception as e:
+        print(f"  ERROR: Failed to lookup brand_id for {ticker}: {str(e)}")
+        return None
+
+def ensure_path_exists(ref, path):
+    """Ensure the path structure exists, create if missing"""
+    try:
+        # Check if path exists
+        existing_data = ref.child(path).get()
+        if existing_data is None:
+            # Create empty structure if path doesn't exist
+            ref.child(path).set({})
+            print(f"    Created path structure: {path}")
+        return True
+    except Exception as e:
+        print(f"    ERROR: Failed to create path {path}: {str(e)}")
+        return False
+
 def upload_aggregated_data_to_realtime(ref, aggregated_data, dry_run=False):
     """Upload aggregated company data to Realtime Database"""
     if dry_run:
@@ -152,27 +181,42 @@ def upload_aggregated_data_to_realtime(ref, aggregated_data, dry_run=False):
         print("=" * 50)
         
         success_count = 0
+        skipped_count = 0
         
         for ticker, cycles in aggregated_data.items():
             try:
-                # Upload to brands/[ticker]/records/[cycle]/pac
+                # Step 1: Get brand_id from ticker mapping
+                brand_id = get_brand_id_from_ticker(ref, ticker)
+                if not brand_id:
+                    print(f"  SKIPPING: No brand_id mapping for {ticker}")
+                    skipped_count += 1
+                    continue
+                
+                # Step 2: Upload to brands/[brand_id]/records/[cycle]/pac
                 for cycle, data in cycles.items():
                     pac_data = data.get('pac', {})
                     
-                    # Create the path: brands/[ticker]/records/[cycle]/pac
-                    brand_path = f"brands/{ticker}/records/{cycle}/pac"
+                    # Create the path: brands/[brand_id]/records/[cycle]/pac
+                    brand_path = f"brands/{brand_id}/records/{cycle}/pac"
                     
-                    # Upload PAC data
+                    # Step 3: Ensure path structure exists
+                    if not ensure_path_exists(ref, f"brands/{brand_id}/records/{cycle}"):
+                        print(f"  ERROR: Failed to create path structure for {ticker}")
+                        continue
+                    
+                    # Step 4: Upload PAC data
                     ref.child(brand_path).set(pac_data)
                     success_count += 1
                     
-                    print(f"  Uploaded: {ticker} ({cycle}) - D: ${pac_data.get('democrat', 0):,.2f}, R: ${pac_data.get('republican', 0):,.2f}")
+                    print(f"  Uploaded: {ticker} -> {brand_id} ({cycle}) - D: ${pac_data.get('democrat', 0):,.2f}, R: ${pac_data.get('republican', 0):,.2f}")
                 
             except Exception as e:
                 print(f"ERROR: Failed to upload {ticker}: {str(e)}")
                 continue
         
         print(f"\nSUCCESS: Uploaded {success_count} company-election cycle combinations")
+        if skipped_count > 0:
+            print(f"SKIPPED: {skipped_count} companies without brand_id mapping")
         print("SUCCESS: Aggregated data upload completed (Realtime Database)")
         return success_count > 0
 

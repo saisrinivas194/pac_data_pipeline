@@ -14,3 +14,16 @@ SNOWFLAKE_ACCOUNT=your_account_identifier
 SNOWFLAKE_WAREHOUSE=your_warehouse_name
 SNOWFLAKE_DATABASE=your_database_name
 SNOWFLAKE_SCHEMA=your_schema_name
+
+# For Index Align Database (also include Firebase above)
+INDEX_ALIGN_SSH_HOST=indexalign
+INDEX_ALIGN_SSH_USER=ubuntu
+INDEX_ALIGN_SSH_PORT=22
+INDEX_ALIGN_SSH_KEY_PATH=/path/to/your/.ssh/id_rsa
+# OR use password (if not using SSH key):
+# INDEX_ALIGN_SSH_PASSWORD=your_ssh_password
+INDEX_ALIGN_DB_HOST=127.0.0.1
+INDEX_ALIGN_DB_PORT=3306
+INDEX_ALIGN_DB_NAME=indexalign
+INDEX_ALIGN_DB_USER=root
+INDEX_ALIGN_DB_PASSWORD=your_database_password
