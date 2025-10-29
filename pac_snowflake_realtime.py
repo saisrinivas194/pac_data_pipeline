@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 PAC SNOWFLAKE TO REALTIME DATABASE TRANSFER
-Professional PAC data pipeline for transferring aggregated data from Snowflake to Firebase Realtime Database
+PAC data pipeline for transferring aggregated data from Snowflake to Firebase Realtime Database
 """
 
 import os
