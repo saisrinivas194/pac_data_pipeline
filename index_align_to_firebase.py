@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+INDEX ALIGN TO FIREBASE ISSUES TRANSFER
+Professional data pipeline for transferring issues data from Index Align database to Firebase
+"""
+
 import os
 import pymysql
 import pandas as pd
@@ -140,8 +146,21 @@ def get_issues_from_database(conn):
         print(f"ERROR: Failed to retrieve issues: {str(e)}")
         return None
 
-def transform_issues_data(df):
-    """Transform issues data for Firebase"""
+def get_company_id_from_ticker(ref, ticker):
+    """Get company_id from ticker using the /tickers mapping in Firebase"""
+    try:
+        ticker_ref = ref.child('tickers').child(ticker)
+        company_id = ticker_ref.get()
+        if company_id:
+            return company_id
+        else:
+            return None
+    except Exception as e:
+        print(f"  ERROR: Failed to lookup company_id for ticker {ticker}: {str(e)}")
+        return None
+
+def transform_issues_data(df, ref):
+    """Transform issues data for Firebase structure: /issues/[company_id]/[issue_name]/Against, Neutral, Pro"""
     if df is None or df.empty:
         return None
     
@@ -152,65 +171,134 @@ def transform_issues_data(df):
         # Make a copy to avoid SettingWithCopyWarning
         df_transformed = df.copy()
         
-        # Convert datetime columns to ISO format strings
-        datetime_columns = df_transformed.select_dtypes(include=['datetime64']).columns
-        for col in datetime_columns:
-            df_transformed[col] = df_transformed[col].apply(
-                lambda x: x.isoformat() if pd.notna(x) else None
-            )
+        # Identify required columns
+        # Look for ticker column (could be ticker, TICKER, company_ticker, etc.)
+        ticker_column = None
+        for possible_ticker in ['ticker', 'TICKER', 'company_ticker', 'COMPANY_TICKER', 'symbol', 'SYMBOL']:
+            if possible_ticker in df_transformed.columns:
+                ticker_column = possible_ticker
+                break
         
-        # Convert numeric columns - ensure they're JSON serializable
-        numeric_columns = df_transformed.select_dtypes(include=['float', 'int']).columns
-        for col in numeric_columns:
-            df_transformed[col] = df_transformed[col].apply(
-                lambda x: float(x) if pd.notna(x) else None
-            )
+        if ticker_column is None:
+            print("ERROR: No ticker column found in issues table")
+            print(f"Available columns: {list(df_transformed.columns)}")
+            return None
+        
+        # Look for issue name column
+        issue_name_column = None
+        for possible_name in ['issue_name', 'ISSUE_NAME', 'issue', 'ISSUE', 'name', 'NAME']:
+            if possible_name in df_transformed.columns:
+                issue_name_column = possible_name
+                break
+        
+        if issue_name_column is None:
+            print("ERROR: No issue name column found in issues table")
+            print(f"Available columns: {list(df_transformed.columns)}")
+            return None
+        
+        # Look for Against, Neutral, Pro columns (case insensitive)
+        against_column = None
+        neutral_column = None
+        pro_column = None
+        
+        for col in df_transformed.columns:
+            col_lower = str(col).lower()
+            if col_lower in ['against', 'against_amount', 'against_value']:
+                against_column = col
+            elif col_lower in ['neutral', 'neutral_amount', 'neutral_value']:
+                neutral_column = col
+            elif col_lower in ['pro', 'pro_amount', 'pro_value', 'for', 'for_amount']:
+                pro_column = col
+        
+        if not against_column or not neutral_column or not pro_column:
+            print("ERROR: Missing required columns (Against, Neutral, Pro)")
+            print(f"Available columns: {list(df_transformed.columns)}")
+            return None
+        
+        print(f"Using columns:")
+        print(f"  Ticker: {ticker_column}")
+        print(f"  Issue Name: {issue_name_column}")
+        print(f"  Against: {against_column}")
+        print(f"  Neutral: {neutral_column}")
+        print(f"  Pro: {pro_column}")
+        
+        # Convert numeric columns to float
+        for col in [against_column, neutral_column, pro_column]:
+            df_transformed[col] = pd.to_numeric(df_transformed[col], errors='coerce').fillna(0.0).astype(float)
         
         # Replace NaN with None for JSON serialization
         df_transformed = df_transformed.where(pd.notnull(df_transformed), None)
         
-        # Convert to dictionary with id as key
+        # Build nested structure: issues[company_id][issue_name] = {Against: float, Neutral: float, Pro: float}
         issues_dict = {}
+        ticker_to_company_id = {}
+        skipped_tickers = set()
         
-        # First, identify the ID column name
-        id_column_name = None
-        for possible_id in ['id', 'issue_id', 'ID', 'ISSUE_ID']:
-            if possible_id in df_transformed.columns:
-                id_column_name = possible_id
-                break
-        
-        if id_column_name is None:
-            print("WARNING: No ID column found. Using row index as ID.")
-        
+        print("\nMapping tickers to company_ids...")
         for _, row in df_transformed.iterrows():
-            issue_id = None
+            ticker = str(row[ticker_column]).strip().upper()
             
-            # Try to find id column (could be 'id', 'issue_id', etc.)
-            for possible_id in ['id', 'issue_id', 'ID', 'ISSUE_ID']:
-                if possible_id in row:
-                    issue_id = row[possible_id]
-                    break
-            
-            if issue_id is None:
-                print(f"WARNING: No ID found for issue row, skipping...")
+            # Skip if ticker is missing or already failed
+            if pd.isna(row[ticker_column]) or ticker == 'NAN' or ticker == '':
                 continue
             
-            # Create clean dictionary with all fields (excluding the ID column used as key)
-            issue_dict = {}
-            for key, value in row.items():
-                # Exclude the ID column that's being used as the key to avoid duplication
-                if key != id_column_name:
-                    issue_dict[key] = value
+            if ticker in skipped_tickers:
+                continue
             
-            issues_dict[str(issue_id)] = issue_dict
+            # Get company_id from Firebase ticker mapping
+            if ticker not in ticker_to_company_id:
+                company_id = get_company_id_from_ticker(ref, ticker)
+                if company_id:
+                    ticker_to_company_id[ticker] = str(company_id)
+                else:
+                    print(f"  WARNING: No company_id mapping found for ticker {ticker}, skipping...")
+                    skipped_tickers.add(ticker)
+                    continue
+            
+            company_id = ticker_to_company_id[ticker]
+            issue_name = str(row[issue_name_column]).strip()
+            
+            # Skip if issue name is missing
+            if pd.isna(row[issue_name_column]) or issue_name == '':
+                continue
+            
+            # Initialize company_id if not exists
+            if company_id not in issues_dict:
+                issues_dict[company_id] = {}
+            
+            # Add issue data
+            issues_dict[company_id][issue_name] = {
+                'Against': float(row[against_column]) if pd.notna(row[against_column]) else 0.0,
+                'Neutral': float(row[neutral_column]) if pd.notna(row[neutral_column]) else 0.0,
+                'Pro': float(row[pro_column]) if pd.notna(row[pro_column]) else 0.0
+            }
         
-        print(f"SUCCESS: Transformed {len(issues_dict)} issues")
+        print(f"\nSUCCESS: Transformed issues data")
+        print(f"  Companies processed: {len(issues_dict)}")
+        print(f"  Tickers skipped (no mapping): {len(skipped_tickers)}")
+        
+        # Validate exactly 8 issues per company
+        companies_with_wrong_count = []
+        for company_id, issues in issues_dict.items():
+            if len(issues) != 8:
+                companies_with_wrong_count.append((company_id, len(issues)))
+        
+        if companies_with_wrong_count:
+            print(f"\nWARNING: {len(companies_with_wrong_count)} companies don't have exactly 8 issues:")
+            for company_id, count in companies_with_wrong_count[:10]:  # Show first 10
+                print(f"  Company {company_id}: {count} issues")
+        else:
+            print(f"  ✓ All companies have exactly 8 issues")
         
         # Show sample transformed data
-        print("\nSample transformed issue:")
+        print("\nSample transformed data:")
         if issues_dict:
-            sample_id = list(issues_dict.keys())[0]
-            print(json.dumps(issues_dict[sample_id], indent=2, default=str))
+            sample_company_id = list(issues_dict.keys())[0]
+            sample_issues = issues_dict[sample_company_id]
+            sample_issue_name = list(sample_issues.keys())[0]
+            print(f"  Company ID: {sample_company_id}")
+            print(f"  Issue: {sample_issue_name}")
+            print(json.dumps({sample_issue_name: sample_issues[sample_issue_name]}, indent=2))
         
         return issues_dict
         
@@ -221,17 +309,26 @@ def transform_issues_data(df):
         return None
 
 def upload_issues_to_firebase(ref, issues_dict, dry_run=False):
-    """Upload issues to Firebase Realtime Database under /issues path"""
+    """Upload issues to Firebase Realtime Database under /issues/[company_id]/[issue_name] path"""
     if dry_run:
         print("\nDRY RUN MODE - Testing issues upload")
         print("=" * 50)
-        print(f"Would upload {len(issues_dict)} issues")
-        print("\nSample issues:")
-        for i, (issue_id, issue_data) in enumerate(list(issues_dict.items())[:3]):
-            print(f"\nIssue {i+1} (ID: {issue_id}):")
-            for key, value in list(issue_data.items())[:5]:
-                print(f"  {key}: {value}")
-        print("\nWould upload to Firebase path: /issues")
+        print(f"Would upload issues for {len(issues_dict)} companies")
+        
+        # Count total issues
+        total_issues = sum(len(issues) for issues in issues_dict.values())
+        print(f"Total issues: {total_issues}")
+        
+        print("\nSample company data:")
+        for i, (company_id, issues) in enumerate(list(issues_dict.items())[:3]):
+            print(f"\nCompany {i+1} (ID: {company_id}): {len(issues)} issues")
+            for issue_name, values in list(issues.items())[:2]:
+                print(f"  {issue_name}:")
+                print(f"    Against: {values['Against']}")
+                print(f"    Neutral: {values['Neutral']}")
+                print(f"    Pro: {values['Pro']}")
+        print("\nWould upload to Firebase path: /issues/[company_id]/[issue_name]")
+        print("Note: This will overwrite all existing data for each company_id")
         return True
     else:
         print("\nUPLOADING ISSUES TO FIREBASE")
@@ -241,16 +338,34 @@ def upload_issues_to_firebase(ref, issues_dict, dry_run=False):
             # Upload to /issues path
             issues_ref = ref.child('issues')
             
-            # Upload all issues
-            issues_ref.set(issues_dict)
+            success_count = 0
+            skipped_count = 0
             
-            print(f"SUCCESS: Uploaded {len(issues_dict)} issues to Firebase /issues path")
+            # Upload each company's issues (overwrites entire company object)
+            for company_id, company_issues in issues_dict.items():
+                try:
+                    # Upload entire company object - this overwrites everything for that company_id
+                    company_ref = issues_ref.child(str(company_id))
+                    company_ref.set(company_issues)
+                    
+                    success_count += 1
+                    issue_count = len(company_issues)
+                    print(f"  ✓ Uploaded company {company_id}: {issue_count} issues")
+                    
+                except Exception as e:
+                    print(f"  ✗ ERROR: Failed to upload company {company_id}: {str(e)}")
+                    skipped_count += 1
+                    continue
+            
+            print(f"\nSUCCESS: Uploaded issues for {success_count} companies")
+            if skipped_count > 0:
+                print(f"SKIPPED: {skipped_count} companies failed to upload")
             
             # Verify upload
-            uploaded_count = len(issues_ref.get() or {})
-            print(f"VERIFIED: {uploaded_count} issues now in Firebase")
+            uploaded_companies = len(issues_ref.get() or {})
+            print(f"VERIFIED: {uploaded_companies} companies now in Firebase /issues")
             
-            return True
+            return success_count > 0
             
         except Exception as e:
             print(f"ERROR: Failed to upload issues: {str(e)}")
@@ -288,7 +403,7 @@ def main():
         
         # Step 4: Transform data
         print("\nStep 4: Transforming issues data...")
-        issues_dict = transform_issues_data(df)
+        issues_dict = transform_issues_data(df, firebase_ref)
         if issues_dict is None:
             print("ERROR: Data transformation failed")
             return False
